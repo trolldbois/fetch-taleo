@@ -6,7 +6,9 @@
 
 
 
-import httplib, urllib
+import httplib, urllib,time
+import lxml,lxml.html,re,os
+from lxml import etree
 
 SERVER='sas.taleo.net'
 PORT=443
@@ -41,14 +43,12 @@ def uncompress(cdata):
   data = gzipper.read() 
   return data
 
-def request(pageId):
+def request(conn,pageId):
   params=getParams(paramsFile)
   params[TAMPERPARAM]=pageId
   params1=['%s=%s'%(k,v) for k,v in params.items()]
   params='&'.join(params1)
   headers=getParams(headersFile,sep=':')
-  # open connection
-  conn = httplib.HTTPSConnection(SERVER, PORT)
   #conn = httplib.HTTPConnection('localhost', '8080')
   conn.request(METHOD,URL,params,headers)
   return conn
@@ -67,14 +67,17 @@ def handleResponse(conn):
       data=uncompress(data)
     return data
 
+def remove_html_tags(data):
+    p = re.compile(r'<.*?>')
+    return p.sub('', data)
 
 class JobOffer():
   BADPATTERNS=['applicants must be legally authorized to work in the United States']
   prefix='jobOffer.'
-  def __init__(self,idn,data):
-    self.id=idn
+  def __init__(self,data):
     self.data=data
     self.interesting=None
+    self.parse()
     
   def isInteresting(self):
     #caching
@@ -90,28 +93,57 @@ class JobOffer():
     self.interesting = True
     return  self.interesting
     
-  def writeToFile(self):
-    fout=file(self.prefix+'%s'%self.id,'w')
-    fout.write(data)
+  def writeToFile(self,dirname='./'):
+    fout=file(os.path.sep.join([dirname,self.prefix+'%s'%self.id]),'w')
+    fout.write(self.data)
+
+  def parse(self):
+    #f='jobOffer.1'
+    #tree= lxml.html.parse(f)
+    #root=tree.getroot()
+    root=lxml.html.fromstring(self.data)
+    response=root.get_element_by_id('response')
+    meta=etree.tostring(response, pretty_print=True, method="html").split('!|!')
+    self.title=remove_html_tags(meta[101])
+    self.id=meta[71]
+    self.maxOffers=int(meta[63])
   
   def __repr__(self):
-    return '<Job page %s>'%(self.id)  
+    return '<Job page %s : %s>'%(self.id,self.title)  
+
+
+def getJobOffer(conn,idn):
+  conn=request(conn,idn)
+  data=handleResponse(conn)
+  if data is None:
+    print 'error'
+    sys.exit()
+  #parse it
+  job=JobOffer(data)
+  return job
 
 import sys
 jobs=[]
 idn=1
-conn=request(idn)
-data=handleResponse(conn)
-if data is None:
-  print 'error'
-  sys.exit()
+# open connection
+conn = httplib.HTTPSConnection(SERVER, PORT)
 
-job=JobOffer(idn,data)
+job=getJobOffer(conn,idn)
 if job.isInteresting():
-  job.writeToFile()
+  job.writeToFile('ok')
   jobs.append(job)
+else:
+  job.writeToFile('ko')
 
-job.writeToFile()
+for idn in range(2,job.maxOffers):
+  job=getJobOffer(conn,idn)
+  if job.isInteresting():
+    job.writeToFile('ok')
+    jobs.append(job)
+  else:
+    job.writeToFile('ko')
+  
+  time.sleep(0.5)
 
 print jobs
 
